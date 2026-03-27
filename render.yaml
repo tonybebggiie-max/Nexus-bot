@@ -1,0 +1,11 @@
+services:
+  - type: worker
+    name: nexus-chart-bot
+    env: python
+    buildCommand: pip install -r requirements.txt
+    startCommand: python bot.py
+    envVars:
+      - key: BOT_TOKEN
+        sync: false
+      - key: GEMINI_KEY
+        sync: false
