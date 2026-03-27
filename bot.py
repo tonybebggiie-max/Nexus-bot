@@ -2,17 +2,21 @@ import os
 import json
 import base64
 import logging
+import asyncio
 import httpx
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
-    Application, CommandHandler, MessageHandler,
+    ApplicationBuilder, CommandHandler, MessageHandler,
     CallbackQueryHandler, ContextTypes, filters
 )
 
-logging.basicConfig(level=logging.INFO)
+logging.basicConfig(
+    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
+    level=logging.INFO
+)
 logger = logging.getLogger(__name__)
 
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
+BOT_TOKEN  = os.environ.get("BOT_TOKEN", "")
 GEMINI_KEY = os.environ.get("GEMINI_KEY", "")
 GEMINI_MODELS = [
     "gemini-2.0-flash",
@@ -20,7 +24,6 @@ GEMINI_MODELS = [
     "gemini-1.5-flash",
 ]
 
-# ── User session state ──
 user_state = {}
 
 INSTRUMENTS = [
@@ -44,38 +47,34 @@ def get_state(uid):
             "timeframe": "M5",
             "mode": "Full Trade Plan",
             "images": [],
-            "step": "idle",
         }
     return user_state[uid]
 
 
-# ── /start ──
 async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     state = get_state(uid)
-    state["step"] = "idle"
     state["images"] = []
 
     text = (
         "📊 *NEXUS AI — Chart Analyzer*\n"
         "_Powered by Gemini AI · Built for Synthetic Indices_\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "Send me your *MT5 chart screenshot* and I will give you:\n\n"
+        "Send me your *MT5 chart screenshot* and I'll give you:\n\n"
         "✅ Bias direction (Bull/Bear)\n"
-        "✅ RSI analysis with MA crossover\n"
-        "✅ Key levels — Entry, SL, TP1, TP2\n"
+        "✅ RSI + MA crossover analysis\n"
+        "✅ Entry, SL, TP1, TP2 levels\n"
         "✅ Liquidity sweep detection\n"
         "✅ Full ICT-based trade plan\n"
         "✅ Risk/Reward ratio\n"
         "✅ Execution checklist\n\n"
         "━━━━━━━━━━━━━━━━━━━━\n"
-        "Use the buttons below to configure, then send your chart!\n\n"
-        "📌 *Current settings:*\n"
+        f"📌 *Current settings:*\n"
         f"  Instrument: `{state['instrument']}`\n"
         f"  Timeframe: `{state['timeframe']}`\n"
-        f"  Mode: `{state['mode']}`"
+        f"  Mode: `{state['mode']}`\n\n"
+        "Configure below then send your chart!"
     )
-
     kb = [
         [InlineKeyboardButton("🎯 Set Instrument", callback_data="set_instrument"),
          InlineKeyboardButton("⏱ Set Timeframe", callback_data="set_timeframe")],
@@ -83,10 +82,9 @@ async def start(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         [InlineKeyboardButton("📸 How to use", callback_data="howto")],
     ]
     await update.message.reply_text(text, parse_mode="Markdown",
-                                     reply_markup=InlineKeyboardMarkup(kb))
+                                    reply_markup=InlineKeyboardMarkup(kb))
 
 
-# ── Callbacks ──
 async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
@@ -98,7 +96,7 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = [[InlineKeyboardButton(i, callback_data=f"inst_{i}")] for i in INSTRUMENTS]
         kb.append([InlineKeyboardButton("◀ Back", callback_data="back_main")])
         await query.edit_message_text("🎯 *Select Instrument:*", parse_mode="Markdown",
-                                       reply_markup=InlineKeyboardMarkup(kb))
+                                      reply_markup=InlineKeyboardMarkup(kb))
 
     elif data.startswith("inst_"):
         state["instrument"] = data[5:]
@@ -108,7 +106,7 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = [[InlineKeyboardButton(t, callback_data=f"tf_{t}")] for t in TIMEFRAMES]
         kb.append([InlineKeyboardButton("◀ Back", callback_data="back_main")])
         await query.edit_message_text("⏱ *Select Timeframe:*", parse_mode="Markdown",
-                                       reply_markup=InlineKeyboardMarkup(kb))
+                                      reply_markup=InlineKeyboardMarkup(kb))
 
     elif data.startswith("tf_"):
         state["timeframe"] = data[3:]
@@ -118,7 +116,7 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         kb = [[InlineKeyboardButton(m, callback_data=f"mode_{m}")] for m in MODES]
         kb.append([InlineKeyboardButton("◀ Back", callback_data="back_main")])
         await query.edit_message_text("🔬 *Select Analysis Mode:*", parse_mode="Markdown",
-                                       reply_markup=InlineKeyboardMarkup(kb))
+                                      reply_markup=InlineKeyboardMarkup(kb))
 
     elif data.startswith("mode_"):
         state["mode"] = data[5:]
@@ -130,126 +128,120 @@ async def button_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     elif data == "howto":
         text = (
             "📸 *How to use NEXUS:*\n\n"
-            "1️⃣ Configure your *Instrument* and *Timeframe*\n"
+            "1️⃣ Set your *Instrument* and *Timeframe*\n"
             "2️⃣ Open your MT5 chart\n"
-            "3️⃣ Take a *screenshot* of the chart\n"
-            "4️⃣ Send the screenshot directly to this bot\n"
-            "5️⃣ NEXUS reads the chart and gives you the full analysis\n\n"
+            "3️⃣ Take a *screenshot*\n"
+            "4️⃣ Send the screenshot to this bot\n"
+            "5️⃣ Tap *Analyze* and get your full trade plan!\n\n"
             "💡 *Tips:*\n"
-            "• For top-down analysis, send *multiple screenshots* one by one\n"
-            "  then send the command /analyze\n"
-            "• Make sure RSI indicator is visible on chart\n"
-            "• Clear screenshots give better results\n\n"
-            "━━━━━━━━━━━━━━━━━━━━\n"
+            "• For top-down, send multiple screenshots then tap Analyze\n"
+            "• Make sure RSI is visible on your chart\n"
+            "• Clear screenshots = better analysis\n\n"
             "_Supports all Deriv synthetic indices_"
         )
         kb = [[InlineKeyboardButton("◀ Back", callback_data="back_main")]]
         await query.edit_message_text(text, parse_mode="Markdown",
-                                       reply_markup=InlineKeyboardMarkup(kb))
+                                      reply_markup=InlineKeyboardMarkup(kb))
 
     elif data == "analyze_now":
-        await query.edit_message_text("⏳ Running analysis... please wait.")
-        await run_analysis(query.message, state, uid, ctx)
+        await query.edit_message_text("⏳ Analyzing your chart(s)... please wait.")
+        await run_analysis(query.message, state, ctx)
+
+    elif data == "reset_charts":
+        state["images"] = []
+        await show_main(query, state)
 
 
 async def show_main(query, state):
+    n = len(state["images"])
     text = (
         "📊 *NEXUS AI — Ready*\n\n"
-        "📌 *Current settings:*\n"
+        f"📌 *Settings:*\n"
         f"  Instrument: `{state['instrument']}`\n"
         f"  Timeframe: `{state['timeframe']}`\n"
-        f"  Mode: `{state['mode']}`\n\n"
-        f"  Charts queued: `{len(state['images'])}`\n\n"
-        "━━━━━━━━━━━━━━━━━━━━\n"
-        "Send your chart screenshot now, or configure below:"
+        f"  Mode: `{state['mode']}`\n"
+        f"  Charts queued: `{n}`\n\n"
+        "Send a chart screenshot or configure below:"
     )
-    kb = [
-        [InlineKeyboardButton("🎯 Instrument", callback_data="set_instrument"),
-         InlineKeyboardButton("⏱ Timeframe", callback_data="set_timeframe")],
-        [InlineKeyboardButton("🔬 Mode", callback_data="set_mode"),
-         InlineKeyboardButton("📸 How to", callback_data="howto")],
-    ]
-    if state["images"]:
-        kb.insert(0, [InlineKeyboardButton(
-            f"▶ ANALYZE NOW ({len(state['images'])} chart{'s' if len(state['images'])>1 else ''})",
+    kb = []
+    if n > 0:
+        kb.append([InlineKeyboardButton(
+            f"▶ ANALYZE NOW ({n} chart{'s' if n > 1 else ''})",
             callback_data="analyze_now"
         )])
+    kb.append([
+        InlineKeyboardButton("🎯 Instrument", callback_data="set_instrument"),
+        InlineKeyboardButton("⏱ Timeframe", callback_data="set_timeframe"),
+    ])
+    kb.append([
+        InlineKeyboardButton("🔬 Mode", callback_data="set_mode"),
+        InlineKeyboardButton("🔄 Reset", callback_data="reset_charts"),
+    ])
     await query.edit_message_text(text, parse_mode="Markdown",
                                    reply_markup=InlineKeyboardMarkup(kb))
 
 
-# ── Photo handler ──
 async def photo_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     state = get_state(uid)
 
-    # Download the photo
     photo = update.message.photo[-1]
     file = await ctx.bot.get_file(photo.file_id)
-    
+
     async with httpx.AsyncClient() as client:
         resp = await client.get(file.file_path)
         img_bytes = resp.content
 
     b64 = base64.b64encode(img_bytes).decode()
     state["images"].append(b64)
-
     n = len(state["images"])
+
     text = (
         f"✅ *Chart {n} received!*\n\n"
         f"  Instrument: `{state['instrument']}`\n"
         f"  Timeframe: `{state['timeframe']}`\n"
-        f"  Mode: `{state['mode']}`\n\n"
+        f"  Charts queued: `{n}`\n\n"
+        "Send more charts or tap Analyze:"
     )
-
-    if n == 1:
-        text += "Send more charts for top-down analysis, or tap *Analyze* now:"
-    else:
-        text += f"You have {n} charts queued. Send more or tap *Analyze*:"
-
     kb = [
-        [InlineKeyboardButton(f"▶ ANALYZE NOW ({n} chart{'s' if n>1 else ''})",
-                               callback_data="analyze_now")],
+        [InlineKeyboardButton(f"▶ ANALYZE NOW ({n} chart{'s' if n > 1 else ''})",
+                              callback_data="analyze_now")],
         [InlineKeyboardButton("🔄 Reset Charts", callback_data="reset_charts"),
          InlineKeyboardButton("⚙️ Settings", callback_data="back_main")],
     ]
     await update.message.reply_text(text, parse_mode="Markdown",
-                                     reply_markup=InlineKeyboardMarkup(kb))
+                                    reply_markup=InlineKeyboardMarkup(kb))
 
 
-# ── /analyze command ──
 async def analyze_command(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     uid = update.effective_user.id
     state = get_state(uid)
     if not state["images"]:
-        await update.message.reply_text("❌ No charts queued. Please send a screenshot first.")
+        await update.message.reply_text("❌ No charts queued. Send a screenshot first.")
         return
-    msg = await update.message.reply_text("⏳ Analyzing your chart(s)...")
-    await run_analysis(msg, state, uid, ctx)
+    msg = await update.message.reply_text("⏳ Analyzing...")
+    await run_analysis(msg, state, ctx)
 
 
-# ── Core analysis ──
-async def run_analysis(msg, state, uid, ctx):
-    images = state["images"]
+async def run_analysis(msg, state, ctx):
+    images    = state["images"]
     instrument = state["instrument"]
-    timeframe = state["timeframe"]
-    mode = state["mode"]
+    timeframe  = state["timeframe"]
+    mode       = state["mode"]
 
-    prompt = f"""You are an expert technical analyst specializing in ICT concepts, synthetic indices, liquidity sweeps, RSI divergence, and MetaTrader 5 price action trading.
+    prompt = f"""You are an expert technical analyst specializing in ICT concepts, synthetic indices, liquidity sweeps, RSI divergence, and MetaTrader 5 price action.
 
-Analyze the provided MT5 chart screenshot(s):
+Analyze the MT5 chart screenshot(s):
 - Instrument: {instrument}
 - Timeframe: {timeframe}
-- Analysis Mode: {mode}
-- Trading Style: Intraday / Scalping
+- Mode: {mode}
 
-Apply ICT methodology: identify liquidity sweeps, stop hunts, break of structure (BOS), displacement, premium/discount zones, buyside/sellside liquidity, orderblocks where visible.
+Apply ICT methodology: liquidity sweeps, stop hunts, BOS, displacement, premium/discount zones, orderblocks.
 
-Return ONLY valid JSON, no markdown, no backticks:
+Return ONLY valid JSON, no markdown, no backticks, no extra text:
 
-{{"instrument":"{instrument}","timeframe":"{timeframe}","currentPrice":"string","bias":"BULLISH or BEARISH or NEUTRAL","biasStrength":"STRONG or MODERATE or WEAK","patternDetected":"string","summary":"2-3 sentence summary","rsi":{{"value":0,"ma9":0,"ma21":0,"condition":"OVERSOLD or OVERBOUGHT or NEUTRAL or RECOVERING or DECLINING"}},"timeframes":[{{"tf":"W1","bias":"BULL or BEAR or NEUT","rsi":0,"note":"string"}},{{"tf":"D1","bias":"BULL","rsi":0,"note":"string"}},{{"tf":"H4","bias":"BULL","rsi":0,"note":"string"}},{{"tf":"H1","bias":"BULL","rsi":0,"note":"string"}},{{"tf":"M5","bias":"BULL","rsi":0,"note":"string"}}],"keyLevels":{{"entry":"string","stopLoss":"string","tp1":"string","tp2":"string","resistance":"string","support":"string"}},"riskReward":{{"riskPoints":"string","rewardTp1":"string","ratio":"string"}},"confluence":[{{"factor":"string","aligned":true}}],"executionSteps":[{{"title":"string","detail":"string","action":"BUY or SELL or WAIT or MANAGE"}}],"invalidation":"string","fullAnalysis":"5-7 sentence detailed analysis using ICT terminology"}}"""
+{{"instrument":"string","timeframe":"string","currentPrice":"string","bias":"BULLISH or BEARISH or NEUTRAL","biasStrength":"STRONG or MODERATE or WEAK","patternDetected":"string","summary":"2-3 sentences","rsi":{{"value":0,"ma9":0,"ma21":0,"condition":"OVERSOLD or OVERBOUGHT or NEUTRAL or RECOVERING or DECLINING"}},"timeframes":[{{"tf":"W1","bias":"BULL or BEAR or NEUT","rsi":0,"note":"string"}},{{"tf":"D1","bias":"BULL","rsi":0,"note":"string"}},{{"tf":"H4","bias":"BULL","rsi":0,"note":"string"}},{{"tf":"H1","bias":"BULL","rsi":0,"note":"string"}},{{"tf":"M5","bias":"BULL","rsi":0,"note":"string"}}],"keyLevels":{{"entry":"string","stopLoss":"string","tp1":"string","tp2":"string","resistance":"string","support":"string"}},"riskReward":{{"riskPoints":"string","rewardTp1":"string","ratio":"string"}},"confluence":[{{"factor":"string","aligned":true}}],"executionSteps":[{{"title":"string","detail":"string","action":"BUY or SELL or WAIT or MANAGE"}}],"invalidation":"string","fullAnalysis":"5-7 sentence analysis using ICT terminology"}}"""
 
-    # Try Gemini models
     parts = [{"inline_data": {"mime_type": "image/jpeg", "data": b}} for b in images]
     parts.append({"text": prompt})
 
@@ -266,7 +258,7 @@ Return ONLY valid JSON, no markdown, no backticks:
                 )
                 data = resp.json()
                 if "error" in data:
-                    error_msg = data["error"].get("message", "Unknown error")
+                    error_msg = data["error"].get("message", "Unknown")
                     continue
                 raw = data["candidates"][0]["content"]["parts"][0]["text"]
                 raw = raw.replace("```json", "").replace("```", "").strip()
@@ -274,36 +266,21 @@ Return ONLY valid JSON, no markdown, no backticks:
                 break
             except Exception as e:
                 error_msg = str(e)
-                continue
+
+    state["images"] = []
 
     if not result:
         await ctx.bot.send_message(
             chat_id=msg.chat_id,
-            text=f"❌ Analysis failed: {error_msg}\n\nCheck your GEMINI_KEY in environment variables."
+            text=f"❌ Analysis failed: {error_msg}\n\nMake sure your GEMINI\\_KEY is correct."
         )
-        state["images"] = []
         return
 
-    # Format and send result
     output = format_result(result)
-    
-    # Send in chunks if too long
-    chunks = split_message(output)
-    for i, chunk in enumerate(chunks):
-        await ctx.bot.send_message(
-            chat_id=msg.chat_id,
-            text=chunk,
-            parse_mode="Markdown"
-        )
+    for chunk in split_message(output):
+        await ctx.bot.send_message(chat_id=msg.chat_id, text=chunk, parse_mode="Markdown")
 
-    # Reset images after analysis
-    state["images"] = []
-
-    # Send action buttons
-    kb = [
-        [InlineKeyboardButton("📊 Analyze Another Chart", callback_data="back_main")],
-        [InlineKeyboardButton("⚙️ Change Settings", callback_data="set_instrument")],
-    ]
+    kb = [[InlineKeyboardButton("📊 Analyze Another Chart", callback_data="back_main")]]
     await ctx.bot.send_message(
         chat_id=msg.chat_id,
         text="✅ *Analysis complete!* Send another chart anytime.",
@@ -314,56 +291,45 @@ Return ONLY valid JSON, no markdown, no backticks:
 
 def format_result(r):
     bias = r.get("bias", "NEUTRAL")
-    bias_icon = "🟢" if bias == "BULLISH" else "🔴" if bias == "BEARISH" else "🟡"
-    strength = r.get("biasStrength", "")
-    pattern = r.get("patternDetected", "")
-    price = r.get("currentPrice", "—")
-    
-    rsi = r.get("rsi", {})
-    rsi_val = rsi.get("value", "—")
-    rsi_ma9 = rsi.get("ma9", "—")
-    rsi_ma21 = rsi.get("ma21", "—")
-    rsi_cond = rsi.get("condition", "—")
+    icon = "🟢" if bias == "BULLISH" else "🔴" if bias == "BEARISH" else "🟡"
+    kl   = r.get("keyLevels", {})
+    rr   = r.get("riskReward", {})
+    rsi  = r.get("rsi", {})
 
-    kl = r.get("keyLevels", {})
-    rr = r.get("riskReward", {})
+    tf_lines   = "".join(
+        f"  {'🟢' if t.get('bias')=='BULL' else '🔴' if t.get('bias')=='BEAR' else '🟡'} "
+        f"`{t.get('tf','?')}` — RSI {t.get('rsi','?')} · {t.get('note','')}\n"
+        for t in r.get("timeframes", [])
+    )
+    conf_lines = "".join(
+        f"  {'✅' if c.get('aligned') else '❌'} {c.get('factor','')}\n"
+        for c in r.get("confluence", [])
+    )
+    action_icons = {"BUY":"🟢","SELL":"🔴","WAIT":"⏳","MANAGE":"⚙️"}
+    step_lines = "".join(
+        f"  {i}. {action_icons.get(s.get('action','WAIT'),'▶')} *{s.get('title','')}*\n"
+        f"     {s.get('detail','')}\n"
+        for i, s in enumerate(r.get("executionSteps", []), 1)
+    )
 
-    tfs = r.get("timeframes", [])
-    tf_lines = ""
-    for t in tfs:
-        b = t.get("bias", "NEUT")
-        icon = "🟢" if b == "BULL" else "🔴" if b == "BEAR" else "🟡"
-        tf_lines += f"  {icon} `{t.get('tf','?')}` — RSI {t.get('rsi','?')} · {t.get('note','')}\n"
-
-    conf = r.get("confluence", [])
-    conf_lines = ""
-    for c in conf:
-        icon = "✅" if c.get("aligned") else "❌"
-        conf_lines += f"  {icon} {c.get('factor','')}\n"
-
-    steps = r.get("executionSteps", [])
-    step_lines = ""
-    action_icons = {"BUY": "🟢", "SELL": "🔴", "WAIT": "⏳", "MANAGE": "⚙️"}
-    for i, s in enumerate(steps, 1):
-        icon = action_icons.get(s.get("action", "WAIT"), "▶")
-        step_lines += f"  {i}. {icon} *{s.get('title','')}*\n     {s.get('detail','')}\n"
-
-    output = f"""
-{bias_icon} *NEXUS AI — CHART ANALYSIS*
+    return f"""
+{icon} *NEXUS AI — CHART ANALYSIS*
 ━━━━━━━━━━━━━━━━━━━━
 
 📌 *{r.get('instrument','?')} · {r.get('timeframe','?')}*
-💰 Price: `{price}`
-📊 Bias: *{bias}* ({strength})
-🔍 Pattern: _{pattern}_
+💰 Price: `{r.get('currentPrice','—')}`
+📊 Bias: *{bias}* ({r.get('biasStrength','')})
+🔍 Pattern: _{r.get('patternDetected','')}_
+
+_{r.get('summary','')}_
 
 ━━━━━━━━━━━━━━━━━━━━
 📈 *TIMEFRAME BREAKDOWN*
 {tf_lines}
 ━━━━━━━━━━━━━━━━━━━━
 📉 *RSI MOMENTUM*
-  Value: `{rsi_val}` — {rsi_cond}
-  MA(9): `{rsi_ma9}` | MA(21): `{rsi_ma21}`
+  Value: `{rsi.get('value','—')}` — {rsi.get('condition','—')}
+  MA9: `{rsi.get('ma9','—')}` | MA21: `{rsi.get('ma21','—')}`
 
 ━━━━━━━━━━━━━━━━━━━━
 🎯 *KEY LEVELS*
@@ -388,18 +354,15 @@ def format_result(r):
 {step_lines}
 ━━━━━━━━━━━━━━━━━━━━
 ⚠️ *INVALIDATION*
-  _{r.get('invalidation','—')}_
+_{r.get('invalidation','—')}_
 
 ━━━━━━━━━━━━━━━━━━━━
 📝 *FULL ANALYSIS*
-{r.get('summary','')}
-
 {r.get('fullAnalysis','')}
 
 ━━━━━━━━━━━━━━━━━━━━
-_⚠ Educational purposes only · Not financial advice_
-"""
-    return output.strip()
+_⚠ Educational only · Not financial advice_
+""".strip()
 
 
 def split_message(text, limit=4000):
@@ -417,30 +380,13 @@ def split_message(text, limit=4000):
     return parts
 
 
-# ── Reset callback ──
-async def reset_callback(update, ctx):
-    query = update.callback_query
-    await query.answer()
-    uid = query.from_user.id
-    state = get_state(uid)
-    state["images"] = []
-    await query.edit_message_text("🔄 Charts cleared. Send a new screenshot!")
-
-
-def main():
+if __name__ == "__main__":
     if not BOT_TOKEN:
-        raise ValueError("BOT_TOKEN environment variable not set!")
-    
-    app = Application.builder().token(BOT_TOKEN).build()
+        raise ValueError("BOT_TOKEN not set!")
+    app = ApplicationBuilder().token(BOT_TOKEN).build()
     app.add_handler(CommandHandler("start", start))
     app.add_handler(CommandHandler("analyze", analyze_command))
     app.add_handler(MessageHandler(filters.PHOTO, photo_handler))
-    app.add_handler(CallbackQueryHandler(reset_callback, pattern="^reset_charts$"))
     app.add_handler(CallbackQueryHandler(button_handler))
-
-    logger.info("NEXUS Bot starting...")
+    logger.info("NEXUS Bot is running...")
     app.run_polling(drop_pending_updates=True)
-
-
-if __name__ == "__main__":
-    main()
